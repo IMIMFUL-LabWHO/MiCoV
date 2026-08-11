@@ -2,13 +2,11 @@
 
 MiCov is a Bash-based bioinformatics pipeline for processing **Oxford Nanopore Technologies (ONT)** sequencing data from human coronavirus (**hCoV**) samples.
 
-The pipeline performs read trimming and quality control, reference mapping, primer trimming, mapping statistics, consensus sequence generation, variant calling, and result consolidation.
+The pipeline performs read trimming and quality control, reference mapping, primer trimming, mapping and coverage statistics, consensus sequence generation, variant calling, and result consolidation. Additional R scripts are included for downstream coverage analysis, visualization, and variant-data preparation.
 
 MiCov was developed through collaboration between **IMI MF, University of Ljubljana** and the **Hiscox Lab, University of Liverpool**.
 
-**Author:** Alen Suljič ([alen.suljic@mf.uni-lj.si](mailto:alen.suljic@mf.uni-lj.si))
-**Inspired by:** Martin Bosilj, Hannah Goldswain
-**Initial version:** 9 July 2024
+**Author:** Alen Suljič (alen.suljic@mf.uni-lj.si)
 
 ---
 
@@ -22,9 +20,10 @@ Before running MiCov, install:
 The workflow requires:
 
 * `micov.sh` — main MiCov analysis pipeline
-* MiCov Singularity definition file — used to build the analysis container
+* Singularity definition file used to build the MiCov container
 * `reference/` — reference genomes, genome annotations, and primer coordinates
 * gzip-compressed ONT FASTQ files
+* R scripts for downstream coverage and variant analysis
 
 The `reference/` directory must contain matching:
 
@@ -46,7 +45,7 @@ hcov_229e_1000.primer.bed
 
 The amplicon length must be included in the reference basename supplied to `micov.sh`.
 
-The Singularity container must provide the bioinformatics software used by the pipeline, including:
+The Singularity container provides the bioinformatics software used by the main pipeline, including:
 
 * `fastp`
 * `minimap2`
@@ -54,13 +53,16 @@ The Singularity container must provide the bioinformatics software used by the p
 * `ivar`
 * `seqtk`
 
-Standard Unix utilities such as `awk`, `grep`, `sed`, `tr`, `sort`, `cut`, `find`, and `gunzip` are also used.
+The downstream R scripts require:
+
+* R
+* `tidyverse`
 
 ---
 
 ## Repository overview
 
-MiCov consists primarily of a Bash pipeline that converts ONT FASTQ reads into processed alignments, consensus sequences, coverage statistics, and variant tables.
+MiCov consists of a primary Bash pipeline for ONT sequencing-data processing and R scripts for downstream coverage and variant analysis.
 
 ```text
 ONT FASTQ files
@@ -68,75 +70,82 @@ ONT FASTQ files
       ▼
    micov.sh
       │
-      ▼
-Read trimming + QC
+      ├────────► QC reports
       │
-      ▼
-ONT reference mapping
+      ├────────► Final BAM files
       │
-      ▼
-Primer trimming
+      ├────────► Consensus sequences
       │
-      ├──────────────► Mapping statistics
+      ├────────► Mapping statistics
       │
-      ├──────────────► Coverage data
+      ├────────► coverage.csv
+      │                │
+      │                ▼
+      │      coverage_visualisation.R
+      │                │
+      │                ▼
+      │      Genome coverage figures
       │
-      ├──────────────► Consensus sequences
-      │
-      └──────────────► Variant calls
-                              │
-                              ▼
-                       Consolidated results
+      └────────► sleek_variants.tsv
+                       │
+                       ▼
+             variants_data_prep.R
+                       │
+                       ▼
+             variants_enhanced.csv
 ```
 
 ### Scripts
 
-| Script               | Purpose                                                                                                                              |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `micov.sh`           | Main ONT sequencing pipeline: read trimming, mapping, primer trimming, mapping statistics, consensus generation, and variant calling |
-| `rename_barcodes.sh` | Barcode-renaming helper referenced by the MiCov workflow for preparing ONT input files                                               |
+| Script                     | Purpose                                                                                                                              |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `micov.sh`                 | Main ONT sequencing pipeline: read trimming, mapping, primer trimming, mapping statistics, consensus generation, and variant calling |
+| `coverage_visualisation.R` | Calculates coverage metrics and generates genome-wide coverage visualizations for hCoV-229E, NL63, OC43, and HKU1                    |
+| `variants_data_prep.R`     | Cleans, classifies, and enriches the consolidated iVar variant table for downstream analysis                                         |
 
 ---
 
-# Usage
+## Usage
 
-## 1. Build the Singularity container
+### 1. Build the Singularity container
 
-Build the `micov.sif` container from the supplied MiCov Singularity definition file.
+Build the `micov.sif` container from the supplied Singularity definition file.
 
-Replace `<micov_definition_file>.def` below with the actual definition filename included in the repository:
+Replace `<definition_file>.def` with the name of the MiCov definition file provided in the repository:
 
 ```bash
-sudo singularity build micov.sif <micov_definition_file>.def
+sudo singularity build micov.sif <definition_file>.def
 ```
 
 If you do not have `sudo` privileges, build the container using `--fakeroot`:
 
 ```bash
-singularity build --fakeroot micov.sif <micov_definition_file>.def
+singularity build --fakeroot micov.sif <definition_file>.def
 ```
 
-After a successful build, the working directory should contain approximately:
+After a successful build, the repository should contain approximately:
 
 ```text
 MiCov/
 ├── micov.sh
 ├── micov.sif
-├── <micov_definition_file>.def
-├── reference/
-│   ├── <reference>_<amplicon-length>.fasta
-│   ├── <reference>_<amplicon-length>.gff3
-│   └── <reference>_<amplicon-length>.primer.bed
-└── ...
+├── <definition_file>.def
+├── rename_barcodes.sh
+├── coverage_visualisation.R
+├── variants_data_prep.R
+└── reference/
+    ├── <reference>_<amplicon-length>.fasta
+    ├── <reference>_<amplicon-length>.gff3
+    └── <reference>_<amplicon-length>.primer.bed
 ```
 
 ---
 
-## 2. Prepare the input FASTQ files
+### 2. Prepare the input FASTQ files
 
 MiCov processes gzip-compressed **single-end ONT FASTQ files**.
 
-The script expects files following the naming convention:
+The main script expects input files following the naming convention:
 
 ```text
 <sample>.fastq.gz
@@ -159,17 +168,9 @@ sample02.fastq.gz
 sample03.fastq.gz
 ```
 
-The workflow assumes that ONT barcode files have already been renamed appropriately before running `micov.sh`.
+ONT barcode files should be renamed appropriately before running MiCov. The workflow references:
 
-The pipeline source refers to:
-
-```text
-rename_barcodes.sh
-```
-
-for this preprocessing step.
-
-Sample identifiers are generated from the portion of each filename before the first `.`.
+Sample identifiers are inferred from the portion of each filename before the first `.`.
 
 For example:
 
@@ -187,7 +188,7 @@ sample01
 
 ---
 
-## 3. Select the appropriate reference
+### 3. Select the appropriate reference
 
 MiCov expects the reference basename to include the corresponding **amplicon length**.
 
@@ -211,17 +212,17 @@ The files are used as follows:
 
 * `.fasta` — reference genome used for mapping, consensus generation, and variant calling
 * `.gff3` — genome annotation used for variant annotation
-* `.primer.bed` — primer coordinates used by `ivar trim`
+* `.primer.bed` — primer coordinates used for primer trimming with `ivar trim`
 
 ---
 
-## 4. Check pipeline parameters
+### 4. Review pipeline parameters
 
 Before running MiCov, review the quality and length thresholds near the beginning of `micov.sh`.
 
-These parameters may need to be adjusted according to the characteristics and quality summary of the ONT sequencing run.
+These parameters can be adjusted according to the characteristics and quality of the ONT sequencing run.
 
-Default values are:
+The default values are:
 
 ```bash
 # thread count
@@ -248,17 +249,17 @@ mmq=10
 | `thr`     |    `24` | Number of processing threads                               |
 | `qqp`     |    `12` | Minimum Phred quality threshold used during read filtering |
 | `lr`      |    `60` | Minimum read length retained after trimming                |
-| `cmq`     |    `12` | Mean quality threshold used during trimming                |
-| `mbq`     |    `12` | Minimum base-quality parameter                             |
-| `mmq`     |    `10` | Minimum mapping-quality parameter                          |
+| `cmq`     |    `12` | Mean quality threshold used during read trimming           |
+| `mbq`     |    `12` | Minimum base-quality threshold                             |
+| `mmq`     |    `10` | Minimum mapping-quality threshold                          |
 
 These values can be modified directly in `micov.sh` before execution.
 
 ---
 
-## 5. Run MiCov
+### 5. Run MiCov
 
-Run the pipeline inside the Singularity container using Bash:
+Run the pipeline inside the Singularity container:
 
 ```bash
 singularity exec micov.sif bash micov.sh <reference_name> <fastq_directory>
@@ -284,48 +285,48 @@ reference/hcov_229e_1000.gff3
 reference/hcov_229e_1000.primer.bed
 ```
 
-The second positional argument specifies the directory containing the ONT `.fastq.gz` files.
-
-For example:
+The second positional argument specifies the directory containing the ONT `.fastq.gz` files:
 
 ```text
 /path/to/run/data/
 ```
 
+The current working directory is used as the analysis output directory.
+
 ---
 
-# Main script overview
+## Main script overview
 
-The main `micov.sh` script automates the processing of ONT sequencing reads from FASTQ files to consensus sequences, variant calls, sequencing statistics, and per-position coverage data.
+The main `micov.sh` script automates processing of ONT sequencing reads from raw FASTQ files to consensus sequences, variant calls, sequencing statistics, and per-position coverage data.
 
-For each sample, MiCov performs the following main steps:
+For each sample, the pipeline performs the following steps:
 
 1. **Sample detection**
    Identifies samples from gzip-compressed FASTQ filenames in the supplied input directory.
 
 2. **Read trimming and QC**
-   Uses `fastp` to perform quality trimming, remove poly-X/poly-G sequence, filter short reads, and generate HTML and JSON QC reports.
+   Uses `fastp` to perform quality trimming, minimum-length filtering, and poly-X/poly-G trimming. HTML and JSON QC reports are generated for each sample.
 
 3. **ONT reference mapping**
    Maps trimmed reads to the selected reference genome using `minimap2` with the ONT-specific `map-ont` preset.
 
 4. **Primer trimming**
-   Removes primer-derived sequence from mapped reads using `ivar trim` and the corresponding primer BED file.
+   Removes primer-derived sequences using `ivar trim` and the corresponding primer BED file.
 
 5. **BAM processing**
-   Uses `samtools` to remove unmapped reads, sort alignments, and index the final BAM file.
+   Removes unmapped reads, sorts the alignments, and generates an indexed BAM file for each sample.
 
 6. **Mapping and coverage statistics**
-   Calculates mapping statistics, reference coverage, and per-position sequencing depth using `samtools`.
+   Calculates alignment statistics, reference coverage, and per-position sequencing depth using `samtools`.
 
 7. **Consensus generation**
-   Generates a consensus sequence using `samtools mpileup` and `ivar consensus`. Ambiguous nucleotide calls and gap characters are converted to `N`.
+   Generates a consensus sequence for each sample using `samtools mpileup` and `ivar consensus`. Ambiguous nucleotide calls and gaps are converted to `N`.
 
 8. **Variant calling and annotation**
-   Detects variants using `ivar variants` and annotates them using the supplied reference FASTA and GFF3 files.
+   Detects variants using `ivar variants` and annotates them using the selected reference FASTA and GFF3 files.
 
 9. **Result consolidation**
-   Combines per-sample consensus sequences, variants, coverage data, and mapping statistics into consolidated result files.
+   Combines individual sample outputs into analysis-wide mapping statistics, consensus sequences, variant tables, and coverage data.
 
 The workflow can be summarized as:
 
@@ -350,7 +351,7 @@ Final BAM
     │
     ├──────────────► Per-position coverage
     │
-    ├──────────────► Consensus sequence
+    ├──────────────► Consensus sequences
     │
     └──────────────► Variant calling
                             │
@@ -360,18 +361,19 @@ Final BAM
 
 ---
 
-# Pipeline details
+## Pipeline details
 
-## Read trimming and quality control
+### Read trimming and quality control
 
 Raw ONT reads are processed using `fastp`.
 
-The pipeline performs:
+The current pipeline performs:
 
-* front-end trimming
-* tail-end trimming
+* front-end quality trimming
+* tail-end quality trimming
 * sliding-window quality filtering
-* minimum quality filtering
+* minimum Phred-quality filtering
+* filtering based on the proportion of unqualified bases
 * minimum read-length filtering
 * poly-X trimming
 * poly-G trimming
@@ -388,7 +390,7 @@ For example:
 trimmed/sample01_trim.fastq.gz
 ```
 
-QC reports are generated as:
+Quality-control reports are generated as:
 
 ```text
 qc/<sample>_fastp.html
@@ -397,45 +399,41 @@ qc/<sample>_fastp.json
 
 ---
 
-## Reference mapping
+### Reference mapping
 
-Trimmed reads are aligned to the reference genome using:
+Trimmed reads are aligned to the reference genome using `minimap2`.
 
-```bash
-minimap2 -x map-ont
-```
-
-The `map-ont` preset is used for Oxford Nanopore reads.
-
-Secondary alignments are disabled using:
+The pipeline uses:
 
 ```bash
---secondary=no
+minimap2 -x map-ont --secondary=no
 ```
 
-Unmapped reads are removed before downstream processing.
+The `map-ont` preset is designed for Oxford Nanopore sequencing reads.
+
+Secondary alignments are disabled, and unmapped reads are removed before downstream processing.
 
 ---
 
-## Primer trimming
+### Primer trimming
 
-Mapped reads are processed with:
+Primer-derived sequences are removed from mapped reads using:
 
 ```text
 ivar trim
 ```
 
-using:
+with the corresponding primer BED file:
 
 ```text
 reference/<reference>.primer.bed
 ```
 
-Primer trimming is performed before the final BAM file is generated.
+Primer-trimmed alignments are then sorted to produce the final BAM file.
 
 ---
 
-## Final BAM files
+### Final BAM files
 
 The final mapped and primer-trimmed alignment for each sample is written to:
 
@@ -443,7 +441,7 @@ The final mapped and primer-trimmed alignment for each sample is written to:
 mappings/<sample>/<sample>.bam
 ```
 
-with the corresponding index:
+with the corresponding BAM index:
 
 ```text
 mappings/<sample>/<sample>.bam.bai
@@ -458,11 +456,9 @@ mappings/sample01/sample01.bam.bai
 
 ---
 
-# Mapping and coverage statistics
+## Mapping and coverage statistics
 
-MiCov calculates several alignment and sequencing statistics using `samtools`.
-
-For each sample, the pipeline runs:
+MiCov calculates alignment and sequencing statistics using:
 
 * `samtools flagstat`
 * `samtools coverage`
@@ -483,7 +479,7 @@ stats/<sample>.covdepth
 
 ---
 
-## Mapping statistics report
+### Mapping statistics report
 
 Per-sample mapping information is consolidated into:
 
@@ -512,22 +508,22 @@ The fields include:
 
 * `sample` — sample identifier
 * `rname` — reference sequence
-* `startpos` — first reference position
-* `endpos` — final reference position
-* `numreads` — number of reads included in the coverage calculation
+* `startpos` — first reported reference position
+* `endpos` — final reported reference position
+* `numreads` — number of reads reported by `samtools coverage`
 * `covbases` — number of covered reference bases
-* `coverage` — percentage of the reference sequence covered
+* `coverage` — percentage of reference bases covered
 * `meandepth` — mean sequencing depth
 * `meanbaseq` — mean base quality
 * `meanmapq` — mean mapping quality
-* `primary_mapped` — number of primary mapped reads
-* `nreads_raw` — number of reads counted from the trimmed FASTQ file
+* `primary_mapped` — number of primary mapped reads reported by `samtools flagstat`
+* `nreads_raw` — number of reads counted in the trimmed FASTQ file
 
-> **Note:** Despite the column name `nreads_raw`, the current implementation calculates this value from `trimmed/<sample>_trim.fastq.gz`, so it represents the number of reads remaining after `fastp` processing.
+> **Note:** Despite the current column name `nreads_raw`, the value is calculated from `trimmed/<sample>_trim.fastq.gz`. It therefore represents the number of reads remaining after `fastp` processing rather than the number of reads in the original untrimmed FASTQ file.
 
 ---
 
-# Consensus sequence generation
+## Consensus sequence generation
 
 Consensus sequences are generated using:
 
@@ -559,7 +555,7 @@ Ambiguous IUPAC nucleotide codes are converted to:
 N
 ```
 
-Gap characters are also converted to `N`, and the resulting sequence is converted to uppercase.
+Gap characters are also converted to `N`, and the resulting sequences are converted to uppercase.
 
 Individual consensus sequences are written to:
 
@@ -575,7 +571,7 @@ results/consensus_sequences.fasta
 
 ---
 
-# Variant calling
+## Variant calling
 
 Variants are detected using:
 
@@ -589,13 +585,13 @@ followed by:
 ivar variants
 ```
 
-The current variant-frequency threshold is:
+The current minimum alternate allele-frequency threshold is:
 
 ```text
 0.01
 ```
 
-corresponding to a minimum alternate allele frequency of 1%.
+corresponding to 1%.
 
 The minimum sequencing depth supplied to iVar is:
 
@@ -615,7 +611,7 @@ and genome annotation:
 reference/<reference>.gff3
 ```
 
-are used during variant calling and annotation.
+are used for variant calling and annotation.
 
 Individual sample variant tables are written to:
 
@@ -625,11 +621,11 @@ variants/<sample>.tsv
 
 ---
 
-# Result consolidation
+## Result consolidation
 
-After processing all samples, MiCov consolidates the individual outputs into analysis-wide result files.
+After all samples have been processed, MiCov consolidates the individual outputs into analysis-wide result files.
 
-Sample names are added to variant and coverage tables before the per-sample files are merged.
+Sample identifiers are added to the variant and coverage tables before the individual files are merged.
 
 The main consolidated outputs are written to:
 
@@ -639,7 +635,7 @@ results/
 
 ---
 
-# Output files
+## Output files
 
 The main result files generated by `micov.sh` are:
 
@@ -651,47 +647,29 @@ results/
 └── coverage.csv
 ```
 
----
-
-## `mapstats.tsv`
+### `mapstats.tsv`
 
 Contains consolidated mapping and sequencing statistics for all samples.
 
----
-
-## `consensus_sequences.fasta`
+### `consensus_sequences.fasta`
 
 Multi-FASTA file containing the final consensus sequence generated for each sample.
 
----
-
-## `sleek_variants.tsv`
+### `sleek_variants.tsv`
 
 Combined iVar variant table containing variants detected across all samples.
 
-Individual sample variant tables from:
+Individual sample variant tables generated by `ivar variants` are consolidated into this file for downstream analysis.
 
-```text
-variants/
-```
+### `coverage.csv`
 
-are consolidated into this file.
+Combined per-position sequencing-depth data generated from `samtools depth`.
 
----
-
-## `coverage.csv`
-
-Combined per-position sequencing-depth data generated from:
-
-```text
-samtools depth
-```
-
-The first column contains the sample identifier followed by the corresponding reference position and sequencing depth.
+The sample identifier is added to the per-position coverage data before individual sample files are merged.
 
 ---
 
-# Complete output structure
+## Complete output structure
 
 After a successful MiCov analysis, the working directory will contain approximately:
 
@@ -746,7 +724,278 @@ working_directory/
 
 ---
 
-# Logging
+## Downstream analysis
+
+MiCov produces two consolidated datasets used by the downstream R workflows:
+
+```text
+results/
+├── coverage.csv
+└── sleek_variants.tsv
+```
+
+The repository includes:
+
+```text
+coverage_visualisation.R
+variants_data_prep.R
+```
+
+Both scripts require:
+
+```r
+library(tidyverse)
+```
+
+---
+
+### Coverage analysis
+
+The `coverage_visualisation.R` script processes `coverage.csv` files generated by MiCov and summarizes sequencing coverage across the viral reference genomes.
+
+The script currently includes virus-specific analyses for:
+
+* **hCoV-229E**
+* **hCoV-NL63**
+* **hCoV-OC43**
+* **hCoV-HKU1**
+
+For each coronavirus, the script:
+
+1. loads the corresponding `coverage.csv` file
+2. renames the input columns to sample, genomic position, and sequencing depth
+3. calculates mean and median sequencing depth for each genomic position
+4. calculates overall sequencing-depth statistics
+5. determines whether individual positions have sufficient coverage for consensus generation
+6. calculates consensus completeness for each sample
+7. assigns genome positions to virus-specific annotated genes and genomic regions
+8. calculates region-level coverage statistics
+9. generates genome-wide sequencing coverage plots
+10. exports publication-quality TIFF figures
+
+The downstream workflow can be summarized as:
+
+```text
+results/coverage.csv
+        │
+        ▼
+Load coverage data
+        │
+        ▼
+Calculate per-position coverage
+        │
+        ├────► Mean / median sequencing depth
+        │
+        ├────► Consensus completeness
+        │
+        └────► Per-sample coverage statistics
+        │
+        ▼
+Assign genomic regions
+        │
+        ▼
+Calculate region-level coverage
+        │
+        ▼
+Generate genome-wide coverage plot
+        │
+        ▼
+coverage_<virus>.tiff
+```
+
+The script uses virus-specific reference genome coordinates to annotate regions including:
+
+```text
+5'UTR
+ORF1ab
+S
+E
+M
+N
+3'UTR
+```
+
+along with additional virus-specific genes and ORFs.
+
+A genomic position is considered sufficiently covered for consensus-completeness calculations when:
+
+```text
+coverage > 9
+```
+
+corresponding to a minimum sequencing depth of 10 reads.
+
+#### Input
+
+The script uses the `coverage.csv` output generated by MiCov.
+
+An example organization for an analysis containing all four seasonal human coronaviruses is:
+
+```text
+coverage_data/
+├── e229/
+│   └── coverage.csv
+├── nl63/
+│   └── coverage.csv
+├── oc43/
+│   └── coverage.csv
+└── HKU1/
+    └── coverage.csv
+```
+
+Before running the script, replace:
+
+```r
+setwd("/path/to/coverage/data")
+```
+
+with the directory containing the MiCov coverage results.
+
+#### Output
+
+The script generates:
+
+```text
+coverage_229e.tiff
+coverage_nl63.tiff
+coverage_oc43.tiff
+coverage_hku1.tiff
+```
+
+The output location is controlled by the `path` argument supplied to `ggsave()` and should be adjusted for the local analysis environment.
+
+---
+
+### Variant data preparation
+
+The `variants_data_prep.R` script performs downstream processing of the consolidated iVar variant table generated by MiCov:
+
+```text
+results/sleek_variants.tsv
+```
+
+The script requires:
+
+```r
+library(tidyverse)
+```
+
+#### 1. Load variants
+
+Set the working directory to the directory containing `sleek_variants.tsv`:
+
+```r
+setwd("/path/to/results")
+```
+
+and load the consolidated table:
+
+```r
+d <- read_tsv("sleek_variants.tsv")
+```
+
+#### 2. Filter variants
+
+By default, only variants satisfying:
+
+```r
+PASS == TRUE
+```
+
+are retained.
+
+The filtering line can be removed if all detected variants should be analysed regardless of the iVar Fisher's exact test result.
+
+#### 3. Classify variants by allele frequency
+
+Variants are divided into two frequency classes:
+
+```text
+ALT_FREQ >= 0.5  → major
+ALT_FREQ < 0.5   → minor
+```
+
+#### 4. Extract gene annotations
+
+Gene information is extracted from the iVar:
+
+```text
+GFF_FEATURE
+```
+
+field.
+
+#### 5. Generate nucleotide mutation identifiers
+
+Reference nucleotide, genomic position, and alternate allele information are combined to generate a compact nucleotide mutation identifier.
+
+#### 6. Classify mutation type
+
+Variants are categorized as:
+
+* `Deletion`
+* `Insertion`
+* `SNP`
+* `Non-coding`
+
+#### 7. Classify coding substitutions
+
+Coding SNPs are further classified as:
+
+* `Synonymous`
+* `Non-synonymous`
+
+#### 8. Remove duplicate variants
+
+Duplicate sample/mutation combinations are removed from the dataset.
+
+#### 9. Export the enhanced variant table
+
+The processed dataset is exported as:
+
+```text
+variants_enhanced.csv
+```
+
+The output path in the script should be adjusted for the local analysis environment.
+
+The workflow can be summarized as:
+
+```text
+results/sleek_variants.tsv
+           │
+           ▼
+      Load iVar results
+           │
+           ▼
+    Filter PASS variants
+           │
+           ▼
+  Classify allele frequency
+      │             │
+    major          minor
+           │
+           ▼
+    Extract gene annotation
+           │
+           ▼
+    Identify mutation type
+     │       │       │
+    SNP   Insertion Deletion
+     │
+     ├── Synonymous
+     └── Non-synonymous
+           │
+           ▼
+     Remove duplicates
+           │
+           ▼
+ variants_enhanced.csv
+```
+
+---
+
+## Logging
 
 The main pipeline writes standard output and standard error to:
 
@@ -772,21 +1021,21 @@ The log file can be used to inspect individual processing steps and troubleshoot
 
 ---
 
-# Important assumptions
+## Important assumptions
 
 The current implementation assumes that:
 
 1. sequencing data consist of Oxford Nanopore reads
 2. input reads are gzip-compressed FASTQ files
 3. FASTQ files follow the `<sample>.fastq.gz` naming convention
-4. barcode files have been appropriately renamed before running MiCov
+4. ONT barcode FASTQ files have been appropriately renamed before running MiCov
 5. sample identifiers do not contain additional periods
 6. the appropriate reference basename includes the amplicon length
 7. matching FASTA, GFF3, and primer BED files are available for the selected reference
-8. the three reference files use the same basename
+8. all three reference files use the same basename
 9. the `reference/` directory is located directly inside the working directory
-10. the script is executed using Bash
-11. required bioinformatics software is available through the MiCov Singularity container
+10. `micov.sh` is executed using Bash
+11. the required bioinformatics software is available through the MiCov Singularity container
 12. pipeline quality thresholds are reviewed and adjusted when appropriate for the ONT sequencing run
 13. sufficient CPU, memory, and disk space are available for mapping and intermediate files
 
@@ -794,14 +1043,11 @@ When repeating an analysis, using a new working directory is recommended to avoi
 
 ---
 
-# Citation
+## Citation
 
-If MiCov is used in published work, please cite this repository together with relevant publications describing the sequencing protocol, amplicon schemes, and analysis workflow.
-
-For the seasonal human coronavirus amplicon sequencing workflow:
+If MiCov is used in published work, please cite this repository together with the relevant publication describing the seasonal human coronavirus amplicon sequencing workflow:
 
 Ošep, A., Goldswain, H., Suljič, A. *et al.* Development of type-specific amplicon schemes for whole-genome sequencing of seasonal human coronaviruses from clinical samples. **Scientific Reports** (2026).
 https://doi.org/10.1038/s41598-026-63549-1
 
 ---
-
